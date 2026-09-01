@@ -1,0 +1,426 @@
+diff --git a/plugins/platforms/dingtalk/adapter.py b/plugins/platforms/dingtalk/adapter.py
+index 8017589..869fbd5 100644
+--- a/plugins/platforms/dingtalk/adapter.py
++++ b/plugins/platforms/dingtalk/adapter.py
+@@ -109,6 +109,122 @@ MAX_MESSAGE_LENGTH = 20000
+ RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+ _SESSION_WEBHOOKS_MAX = 500
+ _DINGTALK_WEBHOOK_RE = re.compile(r'^https://oapi.dingtalk.com/robot/send')
++DINGTALK_MANAGEMENT_REPLY = "抱歉，我不能回答这类问题，因为可能涉及系统安全或隐私信息。"
++DINGTALK_SCOPE_REPLY = (
++    "抱歉，我仅处理 STUDY/ROLE 账号申请相关工作，包括账号创建、更新、禁用、"
++    "权限分配、申请表检查及处理结果反馈。其他项目运维或业务问题，请联系项目管理人员处理。"
++)
++DINGTALK_CAPABILITIES_REPLY = (
++    "我主要负责处理 STUDY/ROLE 账号申请，包括账号创建、更新、禁用、权限分配、"
++    "申请表检查及处理结果反馈。其他项目运维、eCOA/eDiary 操作指导或项目业务问题，"
++    "请联系项目管理人员处理。"
++)
++DINGTALK_GREETING_REPLY = (
++    "你好，我可以协助处理 STUDY/ROLE 账号创建、更新、禁用、权限分配、"
++    "申请表检查及处理结果反馈。"
++)
++
++_DINGTALK_PRIVACY_REFUSALS = (
++    (
++        re.compile(r"(?:ip|公网|内网|网络地址|服务器地址|端口|域名)", re.IGNORECASE),
++        (
++            "抱歉，我不能提供 IP、网络地址或其他内部连接信息，这涉及系统安全与隐私。",
++            "这类网络信息可能影响系统安全，因此我无法提供。",
++            "抱歉，服务器和网络地址属于受保护信息，我不能回答。",
++        ),
++    ),
++    (
++        re.compile(
++            r"(?:代码|源码|程序逻辑|内部实现|系统架构|配置文件|api\s*key|secret|密钥|密码)",
++            re.IGNORECASE,
++        ),
++        (
++            "抱歉，我不能披露程序代码、内部实现或配置内容，这涉及系统安全。",
++            "这类问题涉及内部代码和系统配置，我无法提供相关信息。",
++            "为了保护系统安全，我不能回答有关源码、架构细节或密钥配置的问题。",
++        ),
++    ),
++    (
++        re.compile(
++            r"(?:(?:查询|查看|告诉|给我|提供|发送|发给|显示|获取|导出|泄露).{0,24}"
++            r"(?:用户信息|个人信息|个人资料|姓名|手机号|联系电话|邮箱|身份证|隐私)|"
++            r"(?:用户信息|个人信息|个人资料|姓名|手机号|联系电话|邮箱|身份证|隐私).{0,24}"
++            r"(?:查询|查看|告诉|给我|提供|发送|发给|显示|获取|导出|泄露))",
++            re.IGNORECASE,
++        ),
++        (
++            "抱歉，我不能提供或查询用户的个人信息，这涉及隐私保护。",
++            "这类内容涉及用户隐私，我无法回答。",
++            "为了保护用户信息安全，我不能披露相关个人资料。",
++        ),
++    ),
++)
++
++# DingTalk is reserved for the Study Access account workflow.  This is deliberately
++# a conservative allowlist: anything outside the account/center/role workflow
++# is answered locally and never forwarded to the general-purpose agent.
++_STUDY_ACCESS_ACCOUNT_REQUEST_PATTERNS = (
++    re.compile(
++        r"(?:账号|账户|帐户|用户|user\s*account|account).{0,24}"
++        r"(?:申请|开通|创建|新增|更新|修改|禁用|停用|删除|权限|角色|审批|确认|处理|"
++        r"状态|结果|查询|失败|问题|未创建|登录)",
++        re.IGNORECASE,
++    ),
++    re.compile(
++        r"(?:申请|开通|创建|新增|更新|修改|禁用|停用|删除|权限|角色|审批|确认|处理|"
++        r"查询|失败|未创建|登录).{0,24}"
++        r"(?:账号|账户|帐户|用户|user\s*account|account)",
++        re.IGNORECASE,
++    ),
++    re.compile(
++        r"(?:study_api|role_api).{0,24}"
++        r"(?:账号|账户|帐户|用户|角色|权限|申请|开通|创建|更新|修改|禁用|停用|审批|"
++        r"确认|excel|附件|模板|处理)",
++        re.IGNORECASE,
++    ),
++    re.compile(
++        r"(?:中心|site).{0,24}"
++        r"(?:创建|新增|更新|修改|权限|申请|excel|附件|模板|处理)",
++        re.IGNORECASE,
++    ),
++    re.compile(
++        r"(?:创建|新增|更新|修改|权限|申请|处理).{0,24}(?:中心|site)",
++        re.IGNORECASE,
++    ),
++    re.compile(
++        r"(?:excel|附件|模板).{0,24}"
++        r"(?:账号|账户|帐户|用户|中心|申请|开通|更新|禁用|角色|权限|处理)",
++        re.IGNORECASE,
++    ),
++    re.compile(
++        r"(?:处理|导入|解析|校验|预览|检查).{0,24}"
++        r"(?:excel|附件|模板|申请表|表格)",
++        re.IGNORECASE,
++    ),
++    re.compile(
++        r"(?:邮件|邮箱|mailbox|email).{0,24}"
++        r"(?:账号|账户|帐户|申请|附件|excel|回复|未回复|处理|结果|失败)",
++        re.IGNORECASE,
++    ),
++    re.compile(
++        r"(?:账号|账户|帐户|申请|附件|excel|回复|未回复|处理|结果|失败).{0,24}"
++        r"(?:邮件|邮箱|mailbox|email)",
++        re.IGNORECASE,
++    ),
++    re.compile(r"^/approve(?:\s|$)", re.IGNORECASE),
++)
++
++_DINGTALK_GREETING_RE = re.compile(
++    r"^(?:@?peter[，,：:\s]*)?(?:你好|您好|嗨|在吗|早上好|下午好|晚上好|hi|hello|hey)"
++    r"[！!。.?？\s]*$",
++    re.IGNORECASE,
++)
++_DINGTALK_CAPABILITIES_RE = re.compile(
++    r"(?:你|机器人|peter).{0,10}(?:能|可以|会|负责).{0,10}"
++    r"(?:做什么|干什么|处理什么|回答什么|提供什么|哪些工作|什么工作|功能|职责)|"
++    r"(?:功能|职责|工作范围|业务范围).{0,10}(?:是什么|有哪些|哪些|介绍)",
++    re.IGNORECASE,
++)
+ 
+ # DingTalk message type → runtime content type
+ DINGTALK_TYPE_MAPPING = {
+@@ -117,6 +233,94 @@ DINGTALK_TYPE_MAPPING = {
+ }
+ 
+ 
++def is_study_access_account_request(text: str) -> bool:
++    """Return whether a DingTalk text belongs to the allowed Study Access workflow."""
++    normalized = re.sub(r"\s+", " ", text or "").strip()
++    return bool(normalized) and any(
++        pattern.search(normalized) for pattern in _STUDY_ACCESS_ACCOUNT_REQUEST_PATTERNS
++    )
++
++
++def classify_study_access_capability(text: str) -> Optional[str]:
++    """Classify an allowed DingTalk request into one business capability.
++
++    This is the first half of the allowlist.  Returning ``None`` means the
++    request must be answered locally and must never reach the agent runtime.
++    The gateway independently validates the returned capability before it
++    exposes any tools.
++    """
++    normalized = re.sub(r"\s+", " ", text or "").strip()
++    if not normalized:
++        return None
++
++    if re.search(r"^/approve(?:\s|$)", normalized, re.IGNORECASE):
++        return "approval"
++    if not is_study_access_account_request(normalized):
++        return None
++    _has_business_object = re.search(
++        r"(?:账号|账户|帐户|用户|中心|site|study_api|role_api|excel|附件|模板|申请表|表格|邮件|邮箱)",
++        normalized,
++        re.IGNORECASE,
++    )
++    _has_business_action = re.search(
++        r"(?:申请|开通|创建|新增|更新|修改|变更|禁用|停用|删除|分配|授权|权限|角色|"
++        r"审批|确认|处理|导入|解析|校验|预览|检查|查询|状态|结果|失败|问题|未创建|登录|回复)",
++        normalized,
++        re.IGNORECASE,
++    )
++    if not (_has_business_object and _has_business_action):
++        return None
++    if re.search(r"(?:excel|附件|模板|申请表|表格)", normalized, re.IGNORECASE):
++        return "excel_process"
++    if re.search(r"(?:中心|site)", normalized, re.IGNORECASE):
++        return "center_manage"
++    if re.search(r"(?:禁用|停用|删除)", normalized, re.IGNORECASE):
++        return "account_disable"
++    if re.search(r"(?:更新|修改|变更)", normalized, re.IGNORECASE):
++        return "account_update"
++    if (
++        re.search(r"(?:状态|结果|失败|问题|未创建|为什么|查询)", normalized, re.IGNORECASE)
++        and not re.search(r"(?:重新|再次).{0,6}(?:创建|开通)", normalized, re.IGNORECASE)
++    ):
++        return "result_support"
++    if re.search(r"(?:申请|开通|创建|新增)", normalized, re.IGNORECASE):
++        return "account_create"
++    if re.search(r"(?:权限|角色|study_api|role_api)", normalized, re.IGNORECASE):
++        return "permission_assign"
++    return "result_support"
++
++
++def get_dingtalk_local_scope_reply(text: str) -> Optional[str]:
++    """Return deterministic replies that must not reach the general model."""
++    normalized = re.sub(r"\s+", " ", text or "").strip()
++    if not normalized:
++        return DINGTALK_SCOPE_REPLY
++    if _DINGTALK_CAPABILITIES_RE.search(normalized):
++        return DINGTALK_CAPABILITIES_REPLY
++    if _DINGTALK_GREETING_RE.fullmatch(normalized):
++        return DINGTALK_GREETING_REPLY
++    return None
++
++
++def get_dingtalk_privacy_refusal(text: str) -> Optional[str]:
++    """Return a privacy refusal when sensitive intent is detected."""
++    normalized = re.sub(r"\s+", " ", text or "").strip()
++    _business_mailbox_request = bool(
++        re.search(r"(?:邮件|邮箱|mailbox|email)", normalized, re.IGNORECASE)
++        and re.search(r"(?:账号申请|账户申请|申请表|附件|excel|处理|检查|审批)", normalized, re.IGNORECASE)
++        and not re.search(r"(?:用户|客户|个人|某人).{0,8}(?:邮件|邮箱|email)", normalized, re.IGNORECASE)
++    )
++    for index, (pattern, replies) in enumerate(_DINGTALK_PRIVACY_REFUSALS):
++        # The third rule protects personal data. Checking the dedicated agent
++        # mailbox for account-application work is an allowed business action,
++        # not a request to disclose a user's email address.
++        if index == 2 and _business_mailbox_request:
++            continue
++        if pattern.search(normalized):
++            return replies[sum(normalized.encode("utf-8")) % len(replies)]
++    return None
++
++
+ def check_dingtalk_requirements() -> bool:
+     """Check if DingTalk dependencies are available and configured.
+ 
+@@ -656,6 +860,46 @@ class DingTalkAdapter(BasePlatformAdapter):
+                 session_webhook_expired_time,
+             )
+ 
++        # Privacy and security restrictions take precedence over business
++        # keywords.  A request mentioning STUDY/ROLE is still blocked when it asks
++        # for passwords, personal data, source code, keys, or network details.
++        privacy_refusal = get_dingtalk_privacy_refusal(_early_text)
++        if privacy_refusal:
++            logger.info(
++                "[%s] DingTalk request blocked by privacy gate msg_id=%s",
++                self.name,
++                msg_id,
++            )
++            await self._send_policy_reply(chat_id, privacy_refusal, msg_id)
++            return
++
++        # Greetings and capability questions get narrow, deterministic replies.
++        # They never reach the general model, which prevents it from advertising
++        # unapproved project-support or customer-service capabilities.
++        local_scope_reply = get_dingtalk_local_scope_reply(_early_text)
++        if local_scope_reply:
++            logger.info(
++                "[%s] DingTalk request answered by local scope gate msg_id=%s",
++                self.name,
++                msg_id,
++            )
++            await self._send_policy_reply(chat_id, local_scope_reply, msg_id)
++            return
++
++        # Keep this channel limited to Study Access account operations.  The gate is
++        # enforced before media download, event construction, or agent routing,
++        # so unrelated requests (for example, an IP query) never reach the
++        # general-purpose model.
++        study_access_capability = classify_study_access_capability(_early_text)
++        if not study_access_capability:
++            logger.info(
++                "[%s] DingTalk request blocked by Study Access scope gate msg_id=%s",
++                self.name,
++                msg_id,
++            )
++            await self._send_policy_reply(chat_id, DINGTALK_SCOPE_REPLY, msg_id)
++            return
++
+         # Resolve media download codes to URLs so vision tools can use them
+         await self._resolve_media_codes(message)
+ 
+@@ -698,6 +942,7 @@ class DingTalkAdapter(BasePlatformAdapter):
+             media_urls=media_urls,
+             media_types=media_types,
+             timestamp=timestamp,
++            metadata={"study_access_capability": study_access_capability},
+         )
+ 
+         logger.debug(
+@@ -756,6 +1001,18 @@ class DingTalkAdapter(BasePlatformAdapter):
+         # LLM see the raw text — it handles "@bot hello" cleanly.
+         return content
+ 
++    @staticmethod
++    def _iter_media_dicts(obj):
++        """Yield nested DingTalk payload dicts carrying media download codes."""
++        if isinstance(obj, dict):
++            if any(k in obj for k in ("downloadCode", "pictureDownloadCode", "fileDownloadCode", "download_code")):
++                yield obj
++            for value in obj.values():
++                yield from DingTalkAdapter._iter_media_dicts(value)
++        elif isinstance(obj, list):
++            for value in obj:
++                yield from DingTalkAdapter._iter_media_dicts(value)
++
+     def _extract_media(self, message: "ChatbotMessage"):
+         """Extract media info from message. Returns (MessageType, [urls], [mime_types])."""
+         msg_type = MessageType.TEXT
+@@ -811,6 +1068,36 @@ class DingTalkAdapter(BasePlatformAdapter):
+                                 if msg_type == MessageType.TEXT:
+                                     msg_type = MessageType.DOCUMENT
+ 
++        # SDK only maps text/picture/richText. Other payloads (file/video/audio)
++        # stay under message.extensions; scan them for download URLs/codes.
++        for item in self._iter_media_dicts(getattr(message, "extensions", {}) or {}):
++            dl_code = (
++                item.get("downloadCode")
++                or item.get("pictureDownloadCode")
++                or item.get("fileDownloadCode")
++                or item.get("download_code")
++                or ""
++            )
++            if dl_code and dl_code not in media_urls:
++                media_urls.append(dl_code)
++                item_type = str(item.get("type") or item.get("fileType") or getattr(message, "message_type", "") or "").lower()
++                if "image" in item_type or item_type == "picture":
++                    media_types.append("image")
++                    if msg_type == MessageType.TEXT:
++                        msg_type = MessageType.PHOTO
++                elif "audio" in item_type or "voice" in item_type:
++                    media_types.append("audio")
++                    if msg_type == MessageType.TEXT:
++                        msg_type = MessageType.AUDIO
++                elif "video" in item_type:
++                    media_types.append("video")
++                    if msg_type == MessageType.TEXT:
++                        msg_type = MessageType.VIDEO
++                else:
++                    media_types.append("application/octet-stream")
++                    if msg_type == MessageType.TEXT:
++                        msg_type = MessageType.DOCUMENT
++
+         msg_type_str = getattr(message, "message_type", "") or ""
+         if msg_type_str == "picture" and not media_urls:
+             msg_type = MessageType.PHOTO
+@@ -825,6 +1112,71 @@ class DingTalkAdapter(BasePlatformAdapter):
+ 
+     # -- Outbound messaging -------------------------------------------------
+ 
++    async def _send_policy_reply(
++        self,
++        chat_id: str,
++        content: str,
++        message_id: str,
++    ) -> SendResult:
++        """Send a local gate response as plain text and verify DingTalk's body.
++
++        DingTalk can return HTTP 200 with a non-zero ``errcode``.  The normal
++        markdown path historically treated every 2xx as success, which could
++        leave a blocked request with Thinking/Done reactions but no visible
++        text.  Policy replies use the simplest text payload, validate the JSON
++        result, and fall back to the regular sender when necessary.
++        """
++        webhook_info = self._get_valid_webhook(chat_id)
++        if not webhook_info or not self._http_client:
++            result = await self.send(chat_id, content, reply_to=message_id)
++            if not result.success:
++                logger.error(
++                    "[%s] DingTalk policy reply failed chat_id=%s error=%s",
++                    self.name,
++                    chat_id,
++                    result.error,
++                )
++            return result
++
++        session_webhook, _ = webhook_info
++        try:
++            resp = await self._http_client.post(
++                session_webhook,
++                json={"msgtype": "text", "text": {"content": content}},
++                timeout=15.0,
++            )
++            try:
++                body = resp.json()
++            except Exception:
++                body = {}
++            errcode = body.get("errcode") if isinstance(body, dict) else None
++            if resp.status_code < 300 and errcode in (None, 0, "0"):
++                logger.info(
++                    "[%s] DingTalk policy reply delivered msg_id=%s",
++                    self.name,
++                    message_id,
++                )
++                self._fire_done_reaction(chat_id)
++                return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
++            logger.warning(
++                "[%s] DingTalk plain policy reply rejected HTTP %s body=%s",
++                self.name,
++                resp.status_code,
++                str(body or resp.text)[:300],
++            )
++        except Exception as exc:
++            logger.warning("[%s] DingTalk plain policy reply error: %s", self.name, exc)
++
++        result = await self.send(chat_id, content, reply_to=message_id)
++        if not result.success:
++            logger.error(
++                "[%s] DingTalk policy reply fallback failed chat_id=%s error=%s",
++                self.name,
++                chat_id,
++                result.error,
++            )
++        return result
++
+     async def send(
+         self,
+         chat_id: str,
+@@ -1323,6 +1675,11 @@ class DingTalkAdapter(BasePlatformAdapter):
+                         if item.get(key):
+                             codes_to_resolve.append((item, key))
+ 
++        for item in self._iter_media_dicts(getattr(message, "extensions", {}) or {}):
++            for key in ("downloadCode", "pictureDownloadCode", "fileDownloadCode", "download_code"):
++                if item.get(key):
++                    codes_to_resolve.append((item, key))
++
+         if not codes_to_resolve:
+             return
+ 
+@@ -1478,6 +1835,8 @@ class _IncomingHandler(
+             msg_id = getattr(chatbot_msg, "message_id", None) or ""
+             conversation_id = getattr(chatbot_msg, "conversation_id", None) or ""
+ 
++            logger.info("[%s] DingTalk callback received msg_id=%s conversation_id=%s type=%s sender=%s", self._adapter.name, msg_id, conversation_id, getattr(chatbot_msg, "conversation_type", ""), getattr(chatbot_msg, "sender_id", ""))
++
+             # Thinking reaction — fire-and-forget, tracked
+             if msg_id and conversation_id:
+                 self._adapter._spawn_bg(
